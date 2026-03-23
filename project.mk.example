@@ -1,0 +1,76 @@
+# project.mk.example
+#
+# Copy this file to project.mk in your project root and fill in the values.
+# project.mk is sourced by the Common/Makefile targets.
+#
+# Usage:
+#   cp /path/to/Common/project.mk.example project.mk
+#   # edit project.mk
+#   make -f /path/to/Common/Makefile export-sim
+#   make -f /path/to/Common/Makefile gen-mem
+#   make -f /path/to/Common/Makefile sim
+
+# ---------------------------------------------------------------------------
+# Tool paths
+# ---------------------------------------------------------------------------
+
+# Full path to the vivado executable (e.g. /tools/Xilinx/Vivado/2022.1/bin/vivado)
+VIVADO ?= vivado
+
+# Full path to the Questasim vsim executable
+# (e.g. /tools/questasim/2022.4/questasim/bin/vsim)
+QUESTA_VSIM ?= vsim
+
+# Full path to the Questasim vlog executable (usually alongside vsim)
+QUESTA_VLOG ?= vlog
+
+# Full path to the Questasim vcom executable (usually alongside vsim)
+QUESTA_VCOM ?= vcom
+
+# ---------------------------------------------------------------------------
+# Vivado project
+# ---------------------------------------------------------------------------
+
+# Absolute path to the Vivado project file (.xpr)
+PROJECT_XPR ?= /path/to/your_project/your_project.xpr
+
+# Name of the Block Design (the .bd filename without extension)
+BD_NAME ?= system
+
+# Hierarchy path of the MicroBlaze processor instance within the Block Design.
+# This is the path used by updatemem to locate the processor's BRAMs.
+# Format: <bd_instance_name>/<microblaze_instance_name>
+# Example: system_i/microblaze_0
+PROC_INSTANCE ?= system_i/microblaze_0
+
+# ---------------------------------------------------------------------------
+# Firmware
+# ---------------------------------------------------------------------------
+
+# Absolute path to the compiled ELF firmware file to load into simulation
+ELF_FILE ?= /path/to/firmware.elf
+
+# ---------------------------------------------------------------------------
+# Simulation
+# ---------------------------------------------------------------------------
+
+# Top-level testbench module name (as known to Questasim)
+SIM_TOP ?= tb_top
+
+# Absolute path to Vivado pre-compiled Questasim simulation libraries.
+# These are generated once via Vivado: Tools -> Compile Simulation Libraries.
+# Example: /tools/Xilinx/Vivado/2022.1/questa_lib
+SIM_LIB_DIR ?= /path/to/questa_sim_libs
+
+# Extra vsim arguments (e.g. "+access +r" for waveform access, "-t 1ps" for timescale)
+VSIM_EXTRA_ARGS ?=
+
+# Simulation run time passed to "run" command. Use "-all" to run until $finish.
+SIM_RUN_TIME ?= -all
+
+# ---------------------------------------------------------------------------
+# Output
+# ---------------------------------------------------------------------------
+
+# Directory where all generated files are written (MMI, mem files, exported sim, etc.)
+OUTPUT_DIR ?= build

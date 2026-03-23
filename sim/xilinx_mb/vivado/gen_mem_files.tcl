@@ -22,20 +22,25 @@
 #   OUTPUT_DIR     - Directory where MMI, mem, and TCL files are written
 #
 # Outputs written to OUTPUT_DIR:
-#   <BD_NAME>.mmi       - Memory Map Information file
+#   <BD_NAME>.mmi        - Memory Map Information file
 #   firmware_updated.mem - ELF content as BRAM initialisation data
 #   load_elf.tcl         - Questasim "mem load" script (source this in sim.do)
+
+source [file join [file dirname [info script]] ../tcl/utils.tcl]
+
+timer_start "total"
+
+log_section "gen_mem_files — Vivado ELF → mem flow"
 
 # ---------------------------------------------------------------------------
 # Minimum version check
 # ---------------------------------------------------------------------------
 proc check_vivado_version { required } {
     set current [version -short]
-    # Compare as "YYYY.N" strings lexicographically — valid for Vivado versioning
+    # Compare as "YYYY.N" strings — lexicographic order matches release order
     if { [string compare $current $required] < 0 } {
-        puts "ERROR: Vivado $required or later is required for write_mem_tcl."
-        puts "       Current version: $current"
-        exit 1
+        die "Vivado $required or later is required (write_mem_tcl was added in 2022.1)." \
+            "Current version: $current"
     }
 }
 
@@ -50,175 +55,169 @@ if { $argc != 5 } {
     exit 1
 }
 
-set project_xpr    [lindex $argv 0]
-set elf_file       [lindex $argv 1]
-set bd_name        [lindex $argv 2]
-set proc_instance  [lindex $argv 3]
-set output_dir     [lindex $argv 4]
+set project_xpr   [file normalize [lindex $argv 0]]
+set elf_file      [file normalize [lindex $argv 1]]
+set bd_name       [lindex $argv 2]
+set proc_instance [lindex $argv 3]
+set output_dir    [file normalize [lindex $argv 4]]
 
-# Resolve to absolute paths so all downstream tools agree on locations
-set project_xpr   [file normalize $project_xpr]
-set elf_file      [file normalize $elf_file]
-set output_dir    [file normalize $output_dir]
-
-puts "INFO: gen_mem_files.tcl"
-puts "INFO:   PROJECT_XPR   = $project_xpr"
-puts "INFO:   ELF_FILE      = $elf_file"
-puts "INFO:   BD_NAME       = $bd_name"
-puts "INFO:   PROC_INSTANCE = $proc_instance"
-puts "INFO:   OUTPUT_DIR    = $output_dir"
+log_info "Configuration:"
+log_kv "PROJECT_XPR"   $project_xpr
+log_kv "ELF_FILE"      $elf_file
+log_kv "BD_NAME"       $bd_name
+log_kv "PROC_INSTANCE" $proc_instance
+log_kv "OUTPUT_DIR"    $output_dir
+hr
 
 # ---------------------------------------------------------------------------
 # Input validation
 # ---------------------------------------------------------------------------
-if { ![file exists $project_xpr] } {
-    puts "ERROR: Project file not found: $project_xpr"
-    exit 1
-}
-
-if { ![file exists $elf_file] } {
-    puts "ERROR: ELF file not found: $elf_file"
-    exit 1
-}
-
-file mkdir $output_dir
+require_file $project_xpr "Vivado project (.xpr)"
+require_file $elf_file    "ELF firmware file" \
+    "Build the firmware first; check that ELF_FILE in project.mk is correct."
+require_dir  $output_dir  "Output directory" 1
 
 # ---------------------------------------------------------------------------
 # Step 1: Open project and implementation run
 # ---------------------------------------------------------------------------
-puts "INFO: Opening project: $project_xpr"
+log_step 1 "Open Vivado project"
+timer_start "open_project"
+
 if { [catch { open_project $project_xpr } err] } {
-    puts "ERROR: Failed to open project: $err"
-    exit 1
+    die "Failed to open project: $err"
 }
 
-# Try to open the implementation run first; fall back to synthesis for
-# designs that have not been fully implemented.
+# Try the implementation run first; fall back to synthesis for designs that
+# have not been fully implemented yet.
 set run_opened 0
 foreach run_name { impl_1 synth_1 } {
     set runs [get_runs $run_name]
-    if { [llength $runs] > 0 } {
-        puts "INFO: Opening run: $run_name"
-        if { [catch { open_run $run_name } err] } {
-            puts "WARNING: Could not open run '$run_name': $err"
-            continue
-        }
-        set run_opened 1
-        break
+    if { [llength $runs] == 0 } { continue }
+    log_info "Opening run: $run_name"
+    if { [catch { open_run $run_name } err] } {
+        log_warn "Could not open '$run_name': $err"
+        continue
     }
+    set run_opened 1
+    break
 }
 
 if { !$run_opened } {
-    puts "ERROR: No completed synthesis or implementation run found in project."
-    puts "       Please run at least synthesis before using this script."
-    exit 1
+    die "No completed synthesis or implementation run found in project." \
+        "Run at least Synthesis in Vivado before calling this script."
 }
+
+timer_stop "open_project" "Project opened"
 
 # ---------------------------------------------------------------------------
 # Step 2: Write MMI (Memory Map Information) file
 # ---------------------------------------------------------------------------
+log_step 2 "Write MMI file (write_mem_info)"
+timer_start "write_mmi"
+
 set mmi_file [file join $output_dir "${bd_name}.mmi"]
-puts "INFO: Writing MMI file: $mmi_file"
+log_info "Output: $mmi_file"
 
 if { [catch { write_mem_info -force $mmi_file } err] } {
-    puts "ERROR: write_mem_info failed: $err"
-    exit 1
+    die "write_mem_info failed: $err"
 }
+require_file $mmi_file "Generated MMI file"
 
-if { ![file exists $mmi_file] } {
-    puts "ERROR: MMI file was not created: $mmi_file"
-    exit 1
-}
-puts "INFO: MMI file written successfully."
+set mmi_size [file size $mmi_file]
+log_ok "MMI written ([format_bytes $mmi_size])"
+timer_stop "write_mmi" "write_mem_info"
 
 # ---------------------------------------------------------------------------
-# Step 3: Run updatemem to produce per-BRAM .mem files from the ELF
+# Step 3: Run updatemem
+#
+# updatemem is a standalone binary shipped with Vivado.  Resolve it from the
+# currently running installation via $XILINX_VIVADO so the script is portable.
 # ---------------------------------------------------------------------------
-# updatemem is a standalone executable shipped with Vivado.
-# Resolve it relative to the currently running Vivado installation so the
-# script works regardless of where Vivado is installed.
-set updatemem_bin [file join $::env(XILINX_VIVADO) bin updatemem]
+log_step 3 "Run updatemem (ELF → per-BRAM .mem)"
+timer_start "updatemem"
+
+set xilinx_vivado [require_env XILINX_VIVADO "Vivado installation root"]
+set updatemem_bin [file join $xilinx_vivado bin updatemem]
 if { ![file exists $updatemem_bin] } {
-    # Some installations put it directly in the install root
-    set updatemem_bin [file join [file dirname $::env(XILINX_VIVADO)] bin updatemem]
+    # Some installations place binaries one level up
+    set updatemem_bin [file join [file dirname $xilinx_vivado] bin updatemem]
 }
-if { ![file exists $updatemem_bin] } {
-    puts "ERROR: Cannot locate updatemem binary."
-    puts "       Expected: $::env(XILINX_VIVADO)/bin/updatemem"
-    exit 1
-}
+require_file $updatemem_bin "updatemem binary" \
+    "Check that XILINX_VIVADO is set correctly: $xilinx_vivado"
 
 set mem_out_file [file join $output_dir "firmware_updated.mem"]
 
-set updatemem_args [list \
-    $updatemem_bin \
-    -force \
-    -meminfo $mmi_file \
-    -data    $elf_file \
+set updatemem_cmd [list \
+    $updatemem_bin  \
+    -force          \
+    -meminfo $mmi_file      \
+    -data    $elf_file      \
     -proc    $proc_instance \
-    -bd      $bd_name \
-    -out     $mem_out_file \
+    -bd      $bd_name       \
+    -out     $mem_out_file  \
 ]
 
-puts "INFO: Running updatemem..."
-puts "INFO:   $updatemem_args"
+log_cmd {*}$updatemem_cmd
 
-if { [catch { exec {*}$updatemem_args } out] } {
-    # exec raises an error on non-zero exit; print stdout/stderr for diagnosis
-    puts "ERROR: updatemem failed."
-    puts $out
+if { [catch { exec {*}$updatemem_cmd } out] } {
+    log_error "updatemem failed."
+    puts stderr $out
     exit 1
 }
-puts $out
-puts "INFO: updatemem completed."
+if { $out ne "" } { puts $out }
 
-if { ![file exists $mem_out_file] } {
-    puts "ERROR: updatemem did not produce output file: $mem_out_file"
-    exit 1
-}
+require_file $mem_out_file "updatemem output .mem file"
+set mem_size [file size $mem_out_file]
+log_ok "firmware_updated.mem written ([format_bytes $mem_size])"
+timer_stop "updatemem" "updatemem"
 
 # ---------------------------------------------------------------------------
-# Step 4: Open behavioral simulation and run write_mem_tcl
+# Step 4: Generate Questasim mem load script via write_mem_tcl
 #
-# write_mem_tcl must be called while a simulation is active. It inspects the
-# simulation hierarchy and emits "mem load" commands for every BRAM instance,
-# pointing to the .mem files that updatemem produced.
+# write_mem_tcl must be called while a Vivado simulation is active.  It
+# inspects the simulation hierarchy and emits one "mem load" command per BRAM
+# instance, pointing to the .mem files that updatemem produced.
 # ---------------------------------------------------------------------------
-puts "INFO: Launching behavioral simulation to run write_mem_tcl..."
+log_step 4 "Generate Questasim mem load script (write_mem_tcl)"
+timer_start "write_mem_tcl"
+
+log_info "Launching behavioral simulation (sim_1)..."
 if { [catch { launch_simulation -simset sim_1 -mode behavioral } err] } {
-    puts "ERROR: launch_simulation failed: $err"
-    puts "       Ensure the project has a simulation fileset (sim_1) configured."
-    exit 1
+    die "launch_simulation failed: $err" \
+        "Ensure the project has a 'sim_1' simulation fileset configured."
 }
 
 set load_tcl [file join $output_dir "load_elf.tcl"]
-puts "INFO: Running write_mem_tcl -> $load_tcl"
+log_info "Output: $load_tcl"
 
 if { [catch { write_mem_tcl -force $load_tcl } err] } {
-    puts "ERROR: write_mem_tcl failed: $err"
-    close_sim
-    exit 1
+    catch { close_sim }
+    die "write_mem_tcl failed: $err"
 }
 
 close_sim
+require_file $load_tcl "Generated load_elf.tcl"
 
-if { ![file exists $load_tcl] } {
-    puts "ERROR: write_mem_tcl did not produce: $load_tcl"
-    exit 1
-}
-puts "INFO: load_elf.tcl written successfully."
+# Count the mem load commands in the generated script as a quick sanity check
+set fd [open $load_tcl r]
+set content [read $fd]
+close $fd
+set mem_load_count [llength [regexp -all -inline {mem load} $content]]
+log_ok "load_elf.tcl written ($mem_load_count mem load command(s))"
+timer_stop "write_mem_tcl" "write_mem_tcl"
 
 # ---------------------------------------------------------------------------
 # Done
 # ---------------------------------------------------------------------------
 close_project
 
+hr "═"
+log_ok "gen_mem_files completed  ([timer_elapsed_str total])"
+hr "═"
 puts ""
-puts "INFO: gen_mem_files.tcl completed successfully."
-puts "INFO: Outputs:"
-puts "INFO:   MMI file   : $mmi_file"
-puts "INFO:   MEM file   : $mem_out_file"
-puts "INFO:   Questa TCL : $load_tcl"
+log_info "Outputs:"
+log_kv "MMI file"    $mmi_file
+log_kv "MEM file"    $mem_out_file
+log_kv "Questa TCL"  $load_tcl
 puts ""
-puts "INFO: Next step: source load_elf.tcl inside your Questasim simulation"
-puts "INFO: after vsim has elaborated the design (see sim.do)."
+log_info "Next: source load_elf.tcl inside Questasim after vsim elaboration (sim.do)."

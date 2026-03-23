@@ -23,6 +23,12 @@
 #   PROJECT_XPR  - Path to the .xpr Vivado project file
 #   OUTPUT_DIR   - Root output directory; sim files go into OUTPUT_DIR/questa_sim/
 
+source [file join [file dirname [info script]] ../tcl/utils.tcl]
+
+timer_start "total"
+
+log_section "export_sim — Vivado → Questasim file export"
+
 # ---------------------------------------------------------------------------
 # Parse arguments
 # ---------------------------------------------------------------------------
@@ -36,83 +42,83 @@ set project_xpr [file normalize [lindex $argv 0]]
 set output_dir  [file normalize [lindex $argv 1]]
 set questa_dir  [file join $output_dir questa_sim]
 
-puts "INFO: export_sim.tcl"
-puts "INFO:   PROJECT_XPR = $project_xpr"
-puts "INFO:   OUTPUT_DIR  = $output_dir"
-puts "INFO:   QUESTA_DIR  = $questa_dir"
+log_info "Configuration:"
+log_kv "PROJECT_XPR" $project_xpr
+log_kv "OUTPUT_DIR"  $output_dir
+log_kv "QUESTA_DIR"  $questa_dir
+hr
 
 # ---------------------------------------------------------------------------
 # Input validation
 # ---------------------------------------------------------------------------
-if { ![file exists $project_xpr] } {
-    puts "ERROR: Project file not found: $project_xpr"
-    exit 1
-}
-
-file mkdir $questa_dir
+require_file $project_xpr "Vivado project (.xpr)"
+require_dir  $questa_dir  "Questasim output directory" 1
 
 # ---------------------------------------------------------------------------
-# Open project
+# Step 1: Open project
 # ---------------------------------------------------------------------------
-puts "INFO: Opening project: $project_xpr"
+log_step 1 "Open Vivado project"
+timer_start "open_project"
+
 if { [catch { open_project $project_xpr } err] } {
-    puts "ERROR: Failed to open project: $err"
-    exit 1
+    die "Failed to open project: $err"
 }
 
+log_ok "Project opened"
+timer_stop "open_project" "open_project"
+
 # ---------------------------------------------------------------------------
-# Export simulation files for Questasim
+# Step 2: Export simulation files for Questasim
 #
 # Flags used:
 #   -simulator questa         : Target simulator
-#   -ip_user_files_dir        : Where Vivado writes IP user files (sources)
-#   -ipstatic_source_dir      : Shared IP static sources (reduces duplication)
-#   -lib_map_path             : Path to pre-compiled Vivado sim libs for Questasim.
-#                               Optional here; can also be specified in sim.do via
-#                               vsim -L flags. Leave empty to skip library mapping.
-#   -use_ip_compiled_libs     : Reference already-compiled IP libs rather than
-#                               re-compiling them every time (faster).
-#   -force                    : Overwrite existing output
-#   -directory                : Root output directory
-#   -include_all_compile_units: Export all compile units, not just the top-level.
-#                               Required when the BD contains sub-BDs or IPs that
-#                               have their own simulation models.
+#   -force                    : Overwrite any existing export
+#   -include_all_compile_units: Export every compile unit (required when the BD
+#                               contains sub-BDs or IPs with their own sim models)
+#   -directory                : Root output path
+#
+# Optional flags (commented out — enable if needed):
+#   -ip_user_files_dir  <dir> : Override where Vivado writes IP user files
+#   -ipstatic_source_dir <dir>: Shared IP static sources (reduces duplication)
+#   -lib_map_path <ini>       : Pre-compiled Questasim library map.  It is
+#                               usually easier to supply SIM_LIB_DIR via sim.do
+#                               so that export_sim.tcl stays machine-independent.
+#   -use_ip_compiled_libs     : Reference pre-compiled IP libs (faster) — only
+#                               valid when -lib_map_path is also supplied.
 # ---------------------------------------------------------------------------
-puts "INFO: Exporting simulation files..."
+log_step 2 "Export simulation files (export_simulation)"
+timer_start "export_sim"
 
-set export_args {
-    -simulator questa
-    -force
-    -include_all_compile_units
-    -directory
-}
-lappend export_args $questa_dir
+set export_args [list \
+    -simulator            questa \
+    -force                        \
+    -include_all_compile_units    \
+    -directory            $questa_dir \
+]
+
+log_cmd export_simulation {*}$export_args
 
 if { [catch { export_simulation {*}$export_args } err] } {
-    puts "ERROR: export_simulation failed: $err"
-    close_project
-    exit 1
+    die "export_simulation failed: $err" \
+        "Check that the project has a 'sim_1' simulation fileset."
 }
 
-puts "INFO: export_simulation completed."
-puts "INFO: Questa simulation files written to: $questa_dir"
+log_ok "export_simulation completed"
+timer_stop "export_sim" "export_simulation"
 
 # ---------------------------------------------------------------------------
-# Locate the generated compile script so the user knows what to source
+# Report generated compile scripts
 # ---------------------------------------------------------------------------
 set compile_scripts [glob -nocomplain [file join $questa_dir "*_compile.do"]]
 if { [llength $compile_scripts] > 0 } {
-    puts ""
-    puts "INFO: Generated compile script(s):"
+    log_info "Generated compile script(s):"
     foreach s $compile_scripts {
-        puts "INFO:   [file tail $s]"
+        log_kv "  compile script" [file tail $s]
     }
-    puts ""
-    puts "INFO: In sim.do, this script is sourced automatically via the"
-    puts "INFO: QUESTA_COMPILE_DO variable."
+    log_info "QUESTA_COMPILE_DO in the Makefile points to this file automatically."
 } else {
-    puts "WARNING: No *_compile.do file found in $questa_dir"
-    puts "         Check that the project has a sim_1 simulation fileset."
+    log_warn "No *_compile.do found in $questa_dir"
+    log_warn "Check that the project has a sim_1 simulation fileset."
 }
 
 # ---------------------------------------------------------------------------
@@ -120,5 +126,9 @@ if { [llength $compile_scripts] > 0 } {
 # ---------------------------------------------------------------------------
 close_project
 
+hr "═"
+log_ok "export_sim completed  ([timer_elapsed_str total])"
+hr "═"
 puts ""
-puts "INFO: export_sim.tcl completed successfully."
+log_info "Output directory: $questa_dir"
+log_info "Run 'make gen-mem' next to convert your ELF to BRAM init files."

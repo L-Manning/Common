@@ -373,6 +373,10 @@ See `.claude/commands/` for Claude skills that automate these flows.
 | `/ip-core` | Add, configure, and upgrade Xilinx IP cores |
 | `/cdc-check` | Analyse clock domain crossings and generate CDC constraints |
 | `/bitstream-prog` | Program a device via JTAG or write to configuration flash |
+| `/resource-report` | Parse utilization reports; flag over-used resources with optimisation tips |
+| `/timing-debug` | Walk through failing timing paths; classify root cause; suggest RTL/constraint fixes |
+| `/zynq-boot` | Generate Zynq/MPSoC BOOT.BIN from FSBL, bitstream, and ELF via `bootgen` |
+| `/vivado-log-review` | Parse Vivado logs; explain every WARNING/CRITICAL WARNING; suggest specific fixes |
 | `/commit-msg` | Generate a structured commit message for RTL/constraints changes |
 | `/merge-request` | Create a GitLab merge request with design change summary |
 

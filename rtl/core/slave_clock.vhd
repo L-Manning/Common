@@ -574,6 +574,11 @@ begin
   -- Pure register process.  All arithmetic is pre-computed in concurrent
   -- signal assignments and proc_offset_comb above.
   --
+  -- The offsetFromMaster calculation follows the normative specification in
+  -- Section 10.2.7.2.  The PI servo algorithm (KP_SHIFT / KI_SHIFT) follows
+  -- the guidance in Annex B (informative) of IEEE 802.1AS-2020; the standard
+  -- does not mandate a specific servo implementation.
+  --
   -- Triggered by r_sync_new (one-cycle pulse from proc_poll_axi).  Requires
   -- r_pdelay_latched = '1' to ensure meanPathDelay is valid first.
   --
